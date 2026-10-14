@@ -1,0 +1,26 @@
+name: Release
+
+# Push a tag like v1.0.0 (matching version in lexi.koplugin/_meta.lua) to publish a release zip.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y luajit
+      - name: Build
+        run: scripts/package.sh
+      - name: Check the tag matches the plugin version
+        run: test -f "dist/lexi-${GITHUB_REF_NAME#v}.zip"
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/lexi-*.zip
+          generate_release_notes: true

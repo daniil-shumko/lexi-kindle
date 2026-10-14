@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y luajit
+      - name: Unit tests
+        run: luajit tests/run.lua
+      - name: Shell syntax
+        run: for f in lexi.koplugin/native/*.sh scriptlets/*.sh scripts/*.sh dev/*.sh; do sh -n "$f"; done
+      - name: Native scripts compile
+        run: for f in lexi.koplugin/native/*.lua lexi.koplugin/*.lua; do luajit -bl "$f" > /dev/null; done
+      - name: Release zip builds
+        run: scripts/package.sh

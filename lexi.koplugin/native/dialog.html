@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<!--
+Lexi over the native Kindle reader, in Lexi's own window (native/ui.lua), driven by native/lexid.lua.
+
+Params in:  { mode: "offer", id, word, provider, prompt }
+            | { mode: "answer", id, html, prompt, preset, presets: [{ id, name }], reused }
+            | { mode: "error", text } | { nativeClosed: true } | { saved: true } | { dismiss: true }
+            ifOpen: true → ignore it unless this dialog is showing.
+            reused: true → an earlier answer to the same word, so offer "Ask AI again".
+Events out: lexiAsk <id>, lexiAskAs "<id> <preset id>", lexiAskAgain "<id> <preset id>", lexiSave <id>,
+            lexiClosed <id>.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<script type="text/javascript" src="bridge.js"></script>
+<style>
+html, body { margin: 0; padding: 0; background: white; color: black; }
+body { font-family: dialog, "Amazon Ember", sans-serif; font-size: 34px; }
+.pane { display: none; box-sizing: border-box; border: 3px solid black; border-radius: 10px; background: white; }
+#offer { text-align: center; font-weight: bold; white-space: nowrap; overflow: hidden; }
+#card { padding: 0.5em 0.8em 0.7em 0.8em; }
+#title { font-weight: bold; font-size: 1.2em; border-bottom: 2px solid black; padding-bottom: 0.25em; margin-bottom: 0.5em; }
+#title small { font-weight: normal; font-size: 0.75em; }
+#body { overflow: hidden; }
+#body p { margin: 0 0 0.45em 0; }
+#body p.head { font-size: 1.1em; margin-bottom: 0.6em; }
+#body p.tr { margin: 0 0 0.2em 0; }
+#body p.note { font-size: 0.75em; font-style: italic; }
+#body hr { border: 0; border-top: 1px solid black; margin: 0.5em 0; }
+#body .choice { border: 2px solid black; border-radius: 6px; padding: 0.45em; margin: 0 0 0.4em 0; text-align: center; font-weight: bold; }
+#buttons { display: table; width: 100%; margin-top: 0.6em; border-spacing: 0.4em 0; }
+.button { display: table-cell; border: 2px solid black; border-radius: 6px; padding: 0.45em 0.3em; text-align: center; font-weight: bold; white-space: nowrap; }
+.wide { display: block; margin: 0.6em 0.4em 0 0.4em; border: 2px solid black; border-radius: 6px; padding: 0.45em 0.3em; text-align: center; font-weight: bold; }
+.off { display: none; }
+</style>
+<script type="text/javascript">
+var SW = (window.screen && screen.width) || 1272;
+var SH = (window.screen && screen.height) || 1696;
+var MARGIN = Math.round(SW * 0.04);
+var MAX_CARD_H = Math.round(SH * 0.8);
+
+// mode: init → offer → asking → answer | choosing | error → closed (and offer again: the window stays)
+var S = { mode: "init", id: null, word: "", provider: "AI", prompt: "", preset: null, presets: [],
+          html: "", reused: false, shown: false, timer: null };
+
+function el(id) { return document.getElementById(id); }
+
+function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function send(name, value) {
+    nativeBridge.sendLipcEvent("com.lab126.pillow", name, value || "");
+}
+
+function dismissAfter(ms) {
+    clearTimeout(S.timer);
+    S.timer = setTimeout(dismiss, ms);
+}
+
+function showPane(name, w) {
+    el("offer").style.display = name === "offer" ? "block" : "none";
+    el("card").style.display = name === "card" ? "block" : "none";
+    el(name).style.width = w + "px";
+}
+
+function place(w, h, x, y) {
+    nativeBridge.setWindowSize(w, h);
+    nativeBridge.setWindowPosition(x, y);
+    if (!S.shown) {
+        S.shown = true;
+        nativeBridge.showMe();
+    } else {
+        nativeBridge.redraw();
+    }
+}
+
+// Not called "close": inside an inline onclick that name resolves to document.close().
+function dismiss() {
+    if (S.mode === "closed") return;
+    S.mode = "closed";
+    S.shown = false;
+    clearTimeout(S.timer);
+    send("lexiClosed", S.id);
+    nativeBridge.dismissMe();
+}
+
+// Small button in the bottom-right corner, over the reader's footer; the native popup stays usable.
+function offer(p) {
+    S.mode = "offer";
+    S.id = p.id;
+    S.word = p.word || "";
+    S.provider = p.provider || "AI";
+    S.prompt = p.prompt || "";
+    el("offer").innerHTML = "Ask AI" + (S.prompt ? " (" + esc(S.prompt) + ")" : "") + " &middot; " + esc(S.word);
+    var w = Math.round(SW * 0.6), h = Math.round(SH * 0.055);
+    showPane("offer", w);
+    el("offer").style.height = h + "px";
+    el("offer").style.lineHeight = (h - 6) + "px";
+    place(w, h, SW - w - MARGIN, SH - h - Math.round(MARGIN / 2));
+    dismissAfter(60000);
+}
+
+function asking(promptName) {
+    S.mode = "asking";
+    card("<p>Asking " + esc(S.provider) + (promptName ? " (" + esc(promptName) + ")" : "") + "&hellip;</p>", "");
+    dismissAfter(180000);
+}
+
+function ask() {
+    if (S.mode !== "offer") return;
+    asking(S.prompt);
+    send("lexiAsk", S.id);
+}
+
+// The full dialog: title, body (paged with "More" when too tall), buttons ("save", "again" or "").
+function card(html, buttons, title) {
+    var w = SW - 2 * MARGIN;
+    showPane("card", w);
+    el("title").innerHTML = esc(S.word || "Lexi") + (title ? " <small>&middot; " + esc(title) + "</small>" : "");
+    el("body").style.height = "auto";
+    el("body").scrollTop = 0;
+    el("body").innerHTML = html;
+    el("save").className = buttons === "save" ? "button" : "off";
+    el("save").textContent = "Save word";
+    el("again").className = buttons === "save" && S.presets.length > 1 ? "button" : "off";
+    el("fresh").className = buttons === "save" && S.reused ? "wide" : "off";
+    el("back").className = buttons === "back" ? "button" : "off";
+    el("more").className = "off";
+    if (el("card").offsetHeight > MAX_CARD_H) {
+        el("more").className = "button";
+        el("body").style.height = (el("body").offsetHeight - (el("card").offsetHeight - MAX_CARD_H)) + "px";
+    }
+    var h = el("card").offsetHeight;
+    place(w, h, MARGIN, Math.round((SH - h) / 2));
+}
+
+function showAnswer() {
+    S.mode = "answer";
+    card(S.html, "save", S.preset && S.presets.length && S.presets[0].id !== S.preset ? S.prompt : "");
+    dismissAfter(900000);
+}
+
+function more() {
+    var body = el("body");
+    var atEnd = body.scrollTop + body.clientHeight >= body.scrollHeight - 1;
+    body.scrollTop = atEnd ? 0 : body.scrollTop + Math.round(body.clientHeight * 0.9);
+    nativeBridge.redraw();
+}
+
+function save() {
+    if (S.mode !== "answer") return;
+    el("save").textContent = "Saving…";
+    send("lexiSave", S.id);
+}
+
+// "Ask again as…": every other prompt, one per row.
+function again() {
+    if (S.mode !== "answer") return;
+    S.mode = "choosing";
+    var rows = [];
+    for (var i = 0; i < S.presets.length; i++) {
+        var p = S.presets[i];
+        if (p.id !== S.preset) rows.push('<div class="choice" onclick="askAs(' + i + ');">' + esc(p.name) + "</div>");
+    }
+    card(rows.join(""), "back", "Ask again as…");
+}
+
+function back() {
+    if (S.mode === "choosing") showAnswer();
+}
+
+function askAs(i) {
+    if (S.mode !== "choosing") return;
+    var p = S.presets[i];
+    asking(p.name);
+    send("lexiAskAs", S.id + " " + p.id);
+}
+
+// "Ask AI again": a new answer instead of the earlier one, with the same prompt.
+function askFresh() {
+    if (S.mode !== "answer") return;
+    asking(S.prompt);
+    send("lexiAskAgain", S.id + " " + (S.preset || ""));
+}
+
+function onParams(json) {
+    var p = JSON.parse(json);
+    if (p.ifOpen && (S.mode === "init" || S.mode === "closed")) return;
+    if (p.dismiss) {
+        dismiss();
+    } else if (p.nativeClosed) {
+        if (S.mode === "offer") dismiss();
+    } else if (p.mode === "offer") {
+        offer(p);
+    } else if (p.mode === "answer") {
+        if (p.id !== S.id) return;
+        S.html = p.html;
+        S.prompt = p.prompt || "";
+        S.preset = p.preset || null;
+        S.presets = p.presets || [];
+        S.reused = !!p.reused;
+        showAnswer();
+    } else if (p.mode === "error") {
+        S.mode = "error";
+        card("<p>" + esc(p.text || "Something went wrong.") + "</p>", "");
+        dismissAfter(120000);
+    } else if (p.saved) {
+        el("save").textContent = "Saved ✓";
+        dismissAfter(1200);
+    }
+}
+
+function init() {
+    nativeBridge.registerClientParamsCallback(onParams);
+}
+</script>
+</head>
+<body onload="init();">
+<div class="pane" id="offer" onclick="ask();"></div>
+<div class="pane" id="card">
+    <div id="title"></div>
+    <div id="body"></div>
+    <div class="off" id="fresh" onclick="askFresh();">Ask AI again</div>
+    <div id="buttons">
+        <div class="off" id="more" onclick="more();">More &#9662;</div>
+        <div class="off" id="back" onclick="back();">Back</div>
+        <div class="off" id="save" onclick="save();">Save word</div>
+        <div class="off" id="again" onclick="again();">Ask again as…</div>
+        <div class="button" id="close" onclick="dismiss();">Close</div>
+    </div>
+</div>
+</body>
+</html>

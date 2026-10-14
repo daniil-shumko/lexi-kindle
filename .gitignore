@@ -1,0 +1,5 @@
+.DS_Store
+# Your API keys: never commit.
+lexi.koplugin/config.lua
+# Release archives built by scripts/package.sh
+dist/

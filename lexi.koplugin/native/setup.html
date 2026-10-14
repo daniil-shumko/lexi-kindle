@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<!--
+"Set up from phone" over the Kindle UI, in Lexi's own window (native/ui.lua), driven by
+native/cli.lua while it serves the setup page (lexi_setup.lua).
+
+Params in: { mode: "setup", url, code, port, qr: ["0101…", …] } | { mode: "saved", text }
+           | { mode: "error", text } | { dismiss: true }
+           ifOpen: true → ignore it unless this dialog is showing.
+Event out: lexiSetupClosed <code>, so the setup page stops right away.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<script type="text/javascript" src="bridge.js"></script>
+<style>
+html, body { margin: 0; padding: 0; background: white; color: black; }
+body { font-family: dialog, "Amazon Ember", sans-serif; font-size: 34px; }
+#card { box-sizing: border-box; border: 3px solid black; border-radius: 10px; background: white;
+        padding: 0.6em 0.9em 0.8em 0.9em; text-align: center; }
+#title { font-weight: bold; font-size: 1.25em; border-bottom: 2px solid black; padding-bottom: 0.25em; margin-bottom: 0.6em; text-align: left; }
+.lead { margin: 0.2em 0 0.5em 0; }
+#qr { display: block; margin: 0.3em auto 0.5em auto; }
+#url { font-weight: bold; font-size: 1.05em; word-wrap: break-word; margin: 0.1em 0 0.4em 0; }
+#code { font-size: 1.1em; margin: 0 0 0.4em 0; }
+.small { font-size: 0.8em; }
+#result { font-size: 1.1em; margin: 0.6em 0; }
+#tick { font-size: 3em; line-height: 1; }
+.button { border: 2px solid black; border-radius: 6px; padding: 0.45em; font-weight: bold; margin-top: 0.7em; }
+.off { display: none; }
+</style>
+<script type="text/javascript">
+var SW = (window.screen && screen.width) || 1272;
+var SH = (window.screen && screen.height) || 1696;
+var MARGIN = Math.round(SW * 0.06);
+var S = { mode: "init", code: "", port: 8642, shown: false, timer: null };
+
+function el(id) { return document.getElementById(id); }
+
+function place() {
+    var w = SW - 2 * MARGIN;
+    el("card").style.width = w + "px";
+    var h = el("card").offsetHeight;
+    nativeBridge.setWindowSize(w, h);
+    if (!S.shown) {
+        S.shown = true;
+        nativeBridge.showMe();
+    } else {
+        nativeBridge.redraw();
+    }
+}
+
+function dismiss() {
+    if (S.mode === "closed") return;
+    S.mode = "closed";
+    clearTimeout(S.timer);
+    // Tells native/cli.lua to stop the setup page now instead of waiting for its timeout.
+    nativeBridge.sendLipcEvent("com.lab126.pillow", "lexiSetupClosed", S.code);
+    nativeBridge.dismissMe();
+}
+
+function drawQr(rows) {
+    var canvas = el("qr");
+    if (!rows || !rows.length || !canvas.getContext) { canvas.className = "off"; return; }
+    var n = rows.length, quiet = 4;
+    var cell = Math.floor(Math.min(SW * 0.5, SH * 0.36) / (n + 2 * quiet));
+    canvas.width = canvas.height = cell * (n + 2 * quiet);
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#000";
+    for (var y = 0; y < n; y++) {
+        for (var x = 0; x < n; x++) {
+            if (rows[y].charAt(x) === "1") ctx.fillRect((x + quiet) * cell, (y + quiet) * cell, cell, cell);
+        }
+    }
+}
+
+function show(name) {
+    el("setup").className = name === "setup" ? "" : "off";
+    el("result").className = name === "result" ? "" : "off";
+}
+
+function onParams(json) {
+    var p = JSON.parse(json);
+    if (p.ifOpen && (S.mode === "init" || S.mode === "closed")) return;
+    if (p.dismiss) {
+        dismiss();
+    } else if (p.mode === "setup") {
+        S.mode = "setup";
+        S.code = p.code || "";
+        S.port = p.port || S.port;
+        drawQr(p.qr);
+        el("url").textContent = p.url || "";
+        el("code").textContent = "Code: " + S.code.substr(0, 3) + " " + S.code.substr(3);
+        show("setup");
+        place();
+        S.timer = setTimeout(dismiss, 11 * 60 * 1000);
+    } else if (p.mode === "saved" || p.mode === "error") {
+        S.mode = p.mode;
+        el("tick").className = p.mode === "saved" ? "" : "off";
+        el("resultText").textContent = p.mode === "saved" ? "Saved. " + (p.text || "") : (p.text || "Something went wrong.");
+        show("result");
+        place();
+    }
+}
+
+function init() {
+    nativeBridge.registerClientParamsCallback(onParams);
+}
+</script>
+</head>
+<body onload="init();">
+<div id="card">
+    <div id="title">Set up Lexi</div>
+    <div id="setup" class="off">
+        <p class="lead">Scan with your phone's camera</p>
+        <canvas id="qr" width="10" height="10"></canvas>
+        <p class="lead small">or open this address on a device on the same Wi-Fi:</p>
+        <p id="url"></p>
+        <p id="code"></p>
+        <p class="small">Paste your API key there, pick a model and a prompt. Stops after one save or 10 minutes.
+            Use Wi-Fi you trust, not public Wi-Fi.</p>
+    </div>
+    <div id="result" class="off">
+        <div id="tick">&#10003;</div>
+        <p id="resultText"></p>
+    </div>
+    <div class="button" onclick="dismiss();">Close</div>
+</div>
+</body>
+</html>
